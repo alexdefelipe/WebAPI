@@ -2,6 +2,16 @@ FROM maven:3.6-jdk-11 as builder
 
 WORKDIR /code
 
+ARG DB_URL
+ARG DB_USERNAME
+ARG DB_PASS
+ARG DB_SCHEMA
+
+ENV DB_URL=$DB_URL
+ENV DB_USERNAME=$DB_USERNAME
+ENV DB_PASS=$DB_PASS
+ENV DB_SCHEMA=$DB_SCHEMA
+
 ARG MAVEN_PROFILE=webapi-docker
 
 ARG OPENTELEMETRY_JAVA_AGENT_VERSION=1.17.0
@@ -9,7 +19,11 @@ RUN curl -LSsO https://github.com/open-telemetry/opentelemetry-java-instrumentat
 
 # Download dependencies
 COPY pom.xml /code/
-RUN mkdir .git \
+COPY settings_arch.xml /code/
+COPY create_results_schema.sh /code/
+RUN apt-get update \
+    && apt-get --yes install gettext \
+    && mkdir .git \
     && mvn package \
      -P${MAVEN_PROFILE}
 
@@ -18,10 +32,12 @@ ARG GIT_COMMIT_ID_ABBREV=unknown
 
 # Compile code and repackage it
 COPY src /code/src
-RUN mvn package \
+RUN envsubst < /code/settings_arch.xml > /code/settings.xml \
+    && mvn package \
     -Dgit.branch=${GIT_BRANCH} \
     -Dgit.commit.id.abbrev=${GIT_COMMIT_ID_ABBREV} \
     -P${MAVEN_PROFILE} \
+    -s /code/settings.xml \
     && mkdir war \
     && mv target/WebAPI.war war \
     && cd war \
@@ -55,12 +71,15 @@ COPY --from=builder /code/war/WEB-INF/lib*/* WEB-INF/lib/
 COPY --from=builder /code/war/org org
 COPY --from=builder /code/war/WEB-INF/classes WEB-INF/classes
 COPY --from=builder /code/war/META-INF META-INF
+COPY --from=builder /code/war/META-INF META-INF
 
 EXPOSE 8080
+
+RUN apt-get update
 
 USER 101
 
 # Directly run the code as a WAR.
-CMD exec java ${DEFAULT_JAVA_OPTS} ${JAVA_OPTS} \
+CMD java ${DEFAULT_JAVA_OPTS} ${JAVA_OPTS} \
     -cp ".:WebAPI.jar:WEB-INF/lib/*.jar${CLASSPATH}" \
     org.springframework.boot.loader.WarLauncher
